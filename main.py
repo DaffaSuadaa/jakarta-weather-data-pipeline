@@ -1,12 +1,18 @@
 import os
 import requests
 import psycopg2
-from dotenv import load_dotenv
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
 import logging
 
-load_dotenv()
+# Handle Error GithubAction
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
 # 1. Konfigurasi Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger()
