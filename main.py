@@ -1,50 +1,91 @@
 import os
 import requests
-import pandas as pd
-from datetime import datetime
+import psycopg2
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from psycopg2.extras import execute_values
+from datetime import datetime, timedelta
+import logging
 
-load_dotenv() 
-DATABASE_URL = os.getenv('DATABASE_URL')
+load_dotenv()
+# 1. Konfigurasi Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
 
 def run_etl():
-    """
-    Fungsi utama untuk menjalankan pipeline cuaca.
-    """
-    # --- 1. EXTRACT ---
-    print("Mengekstrak data dari API...")
-    url = "https://api.open-meteo.com/v1/forecast?latitude=-6.2146&longitude=106.8451&current_weather=true"
-    response = requests.get(url)
-    response.raise_for_status() # Akan error jika API down (bagus untuk log)
-    data = response.json()['current_weather']
-
-    # --- 2. TRANSFORM ---
-    print("Mentransformasi data...")
-    df = pd.DataFrame([data])
-    df['time'] = pd.to_datetime(df.get('time', datetime.now())) # Aman jika 'time' tidak ada
-    df['extracted_at'] = datetime.now()
-
-    # --- 3. LOAD ---
-    print("Mengirim data ke Neon.tech...")
-    # Gunakan environment variable untuk keamanan
-    conn_url = DATABASE_URL
+    # Ambil koneksi dari environment variable (GitHub Secrets)
+    DATABASE_URL = os.getenv('DATABASE_URL')
     
-    if not conn_url:
-        raise ValueError("DATABASE_URL tidak ditemukan!")
-
-    if conn_url.startswith("postgres://"):
-        conn_url = conn_url.replace("postgres://", "postgresql://", 1)
-
-    engine = create_engine(conn_url)
-    df.to_sql('jakarta_weather', engine, if_exists='append', index=False)
+    # 2. Tentukan Rentang Waktu (Ambil 7 hari terakhir untuk jaga-jaga jika kemarin gagal)
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=7)
     
-    return "Proses ETL Berhasil!"
+    url = f"https://archive-api.open-meteo.com/v1/archive?latitude=-6.1823&longitude=106.8293&start_date={start_date}&end_date={end_date}&hourly=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,weather_code&timezone=Asia%2FBangkok"
 
-# Titik masuk utama program
-if __name__ == "__main__":
     try:
-        status = run_etl()
-        print(status)
+        # 3. Extract
+        logger.info(f"Mengambil data dari {start_date} hingga {end_date}...")
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        data = response.json()['hourly']
+        
+        # Susun data untuk batch insert
+        records = []
+        for i in range(len(data['time'])):
+            records.append((
+                data['time'][i],
+                data['temperature_2m'][i],
+                data['relative_humidity_2m'][i],
+                data['precipitation'][i],
+                data['surface_pressure'][i],
+                data['wind_speed_10m'][i],
+                data['weather_code'][i],
+                datetime.now()
+            ))
+
+        # 4. Load (dengan Anti-Duplikat)
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Query UPSERT: Jika timeinterval sudah ada, jangan lakukan apa-apa (atau update)
+        upsert_query = """
+        INSERT INTO weather_history (
+            time_interval, 
+            temperature, 
+            humidity, 
+            precipitation, 
+            pressure, 
+            wind_speed, 
+            weather_code, 
+            extracted_at
+        ) VALUES %s
+        ON CONFLICT (time_interval) DO UPDATE SET
+            temperature = EXCLUDED.temperature,
+            humidity = EXCLUDED.humidity,
+            precipitation = EXCLUDED.precipitation,
+            pressure = EXCLUDED.pressure,
+            wind_speed = EXCLUDED.wind_speed,      -- Perbaikan: sebelumnya windspeed
+            weather_code = EXCLUDED.weather_code,  -- Perbaikan: sebelumnya weathercode
+            extracted_at = EXCLUDED.extracted_at;
+        """
+        
+        execute_values(cur, upsert_query, records)
+        conn.commit()
+        
+        logger.info(f"Berhasil memproses {len(records)} baris data ke Neon Tech.")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"🌐 Gagal mengambil data dari API: {e}")
+        raise
+    except psycopg2.Error as e:
+        logger.error(f"🗄️ Gagal operasi database: {e}")
+        raise 
     except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
+        logger.error(f"⚠️ Terjadi kesalahan tidak terduga: {e}")
+        raise
+    finally:
+        if 'conn' in locals():
+            cur.close()
+            conn.close()
+
+if __name__ == "__main__":
+    run_etl()

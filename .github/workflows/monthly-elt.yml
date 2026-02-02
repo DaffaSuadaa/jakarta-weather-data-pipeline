@@ -1,30 +1,28 @@
-name: Monthly Weather ETL
+name: Daily Weather ETL 
 
 on:
   schedule:
-    # Berjalan setiap tanggal 1 jam 00:00 UTC
-    - cron: '0 0 1 * *'
-  workflow_dispatch: # Agar kita bisa klik tombol "Run" secara manual untuk ngetes
+    - cron: '0 0 * * *' 
+  workflow_dispatch:
 
 jobs:
   run-etl:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 
         with:
-          python-version: '3.9'
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install requests psycopg2-binary 
 
       - name: Run ETL Script
         env:
-          # Ini mengambil password dari GitHub Secrets
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python main.py
