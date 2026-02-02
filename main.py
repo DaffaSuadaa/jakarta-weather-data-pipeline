@@ -5,12 +5,12 @@ from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
 import logging
 
-# Handle Error GithubAction
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+# # Handle Error GithubAction
+# try:
+#     from dotenv import load_dotenv
+#     load_dotenv()
+# except ImportError:
+#     pass
 
 
 # 1. Konfigurasi Logging
